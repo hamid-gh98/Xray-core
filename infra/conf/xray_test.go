@@ -340,28 +340,20 @@ func TestMuxConfig_Build(t *testing.T) {
 		want   *proxyman.MultiplexingConfig
 	}{
 		{"default", `{"enabled": true, "concurrency": 16}`, &proxyman.MultiplexingConfig{
-			Enabled:         true,
-			Concurrency:     16,
-			XudpConcurrency: 0,
-			XudpProxyUDP443: "reject",
+			Enabled:     true,
+			Concurrency: 16,
 		}},
 		{"empty def", `{}`, &proxyman.MultiplexingConfig{
-			Enabled:         false,
-			Concurrency:     0,
-			XudpConcurrency: 0,
-			XudpProxyUDP443: "reject",
+			Enabled:     false,
+			Concurrency: 0,
 		}},
 		{"not enable", `{"enabled": false, "concurrency": 4}`, &proxyman.MultiplexingConfig{
-			Enabled:         false,
-			Concurrency:     4,
-			XudpConcurrency: 0,
-			XudpProxyUDP443: "reject",
+			Enabled:     false,
+			Concurrency: 4,
 		}},
 		{"forbidden", `{"enabled": false, "concurrency": -1}`, &proxyman.MultiplexingConfig{
-			Enabled:         false,
-			Concurrency:     -1,
-			XudpConcurrency: 0,
-			XudpProxyUDP443: "reject",
+			Enabled:     false,
+			Concurrency: -1,
 		}},
 	}
 	for _, tt := range tests {

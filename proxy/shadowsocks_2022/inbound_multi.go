@@ -21,7 +21,6 @@ import (
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/protocol"
 	"github.com/xtls/xray-core/common/session"
-	"github.com/xtls/xray-core/common/singbridge"
 	"github.com/xtls/xray-core/common/uuid"
 	"github.com/xtls/xray-core/features/routing"
 	"github.com/xtls/xray-core/transport/internet/stat"
@@ -164,7 +163,7 @@ func (i *MultiUserInbound) Process(ctx context.Context, network net.Network, con
 	ctx = session.ContextWithDispatcher(ctx, dispatcher)
 
 	if network == net.Network_TCP {
-		return singbridge.ReturnError(i.service.NewConnection(ctx, connection, metadata))
+		return returnError(i.service.NewConnection(ctx, connection, metadata))
 	} else {
 		reader := buf.NewReader(connection)
 		pc := &natPacketConn{connection}
@@ -172,7 +171,7 @@ func (i *MultiUserInbound) Process(ctx context.Context, network net.Network, con
 			mb, err := reader.ReadMultiBuffer()
 			if err != nil {
 				buf.ReleaseMulti(mb)
-				return singbridge.ReturnError(err)
+				return returnError(err)
 			}
 			for _, buffer := range mb {
 				packet := B.As(buffer.Bytes()).ToOwned()
@@ -204,11 +203,16 @@ func (i *MultiUserInbound) NewConnection(ctx context.Context, conn net.Conn, met
 	})
 	newError("tunnelling request to tcp:", metadata.Destination).WriteToLog(session.ExportIDToError(ctx))
 	dispatcher := session.DispatcherFromContext(ctx)
-	link, err := dispatcher.Dispatch(ctx, singbridge.ToDestination(metadata.Destination, net.Network_TCP))
+	link, err := dispatcher.Dispatch(ctx, toDestination(metadata.Destination, net.Network_TCP))
 	if err != nil {
 		return err
 	}
-	return singbridge.CopyConn(ctx, conn, link, conn)
+	outConn := &pipeConnWrapper{
+		&buf.BufferedReader{Reader: link.Reader},
+		link.Writer,
+		conn,
+	}
+	return bufio.CopyConn(ctx, conn, outConn)
 }
 
 func (i *MultiUserInbound) NewPacketConnection(ctx context.Context, conn N.PacketConn, metadata M.Metadata) error {
@@ -227,12 +231,12 @@ func (i *MultiUserInbound) NewPacketConnection(ctx context.Context, conn N.Packe
 	})
 	newError("tunnelling request to udp:", metadata.Destination).WriteToLog(session.ExportIDToError(ctx))
 	dispatcher := session.DispatcherFromContext(ctx)
-	destination := singbridge.ToDestination(metadata.Destination, net.Network_UDP)
+	destination := toDestination(metadata.Destination, net.Network_UDP)
 	link, err := dispatcher.Dispatch(ctx, destination)
 	if err != nil {
 		return err
 	}
-	outConn := &singbridge.PacketConnWrapper{
+	outConn := &packetConnWrapper{
 		Reader: link.Reader,
 		Writer: link.Writer,
 		Dest:   destination,

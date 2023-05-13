@@ -13,7 +13,6 @@ import (
 	_ "github.com/xtls/xray-core/app/proxyman/outbound"
 	"github.com/xtls/xray-core/app/router"
 	"github.com/xtls/xray-core/common"
-	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/serial"
 	"github.com/xtls/xray-core/core"
@@ -261,7 +260,7 @@ func TestUDPServer(t *testing.T) {
 			IPv6Enable: true,
 			FakeEnable: false,
 		})
-		if !errors.AllEqual(feature_dns.ErrEmptyResponse, errors.Cause(err)) {
+		if err != feature_dns.ErrEmptyResponse {
 			t.Fatal("error: ", err)
 		}
 		if len(ips) != 0 {
