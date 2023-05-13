@@ -57,8 +57,6 @@ type Handler struct {
 	proxy           proxy.Outbound
 	outboundManager outbound.Manager
 	mux             *mux.ClientManager
-	xudp            *mux.ClientManager
-	udp443          string
 	uplinkCounter   stats.Counter
 	downlinkCounter stats.Counter
 }
@@ -108,50 +106,22 @@ func NewHandler(ctx context.Context, config *core.OutboundHandlerConfig) (outbou
 	}
 
 	if h.senderSettings != nil && h.senderSettings.MultiplexSettings != nil {
-		if config := h.senderSettings.MultiplexSettings; config.Enabled {
-			if config.Concurrency < 0 {
-				h.mux = &mux.ClientManager{Enabled: false}
-			}
-			if config.Concurrency == 0 {
-				config.Concurrency = 8 // same as before
-			}
-			if config.Concurrency > 0 {
-				h.mux = &mux.ClientManager{
-					Enabled: true,
-					Picker: &mux.IncrementalWorkerPicker{
-						Factory: &mux.DialingWorkerFactory{
-							Proxy:  proxyHandler,
-							Dialer: h,
-							Strategy: mux.ClientStrategy{
-								MaxConcurrency: uint32(config.Concurrency),
-								MaxConnection:  128,
-							},
-						},
+		config := h.senderSettings.MultiplexSettings
+		if config.Concurrency < 1 || config.Concurrency > 1024 {
+			return nil, newError("invalid mux concurrency: ", config.Concurrency).AtWarning()
+		}
+		h.mux = &mux.ClientManager{
+			Enabled: h.senderSettings.MultiplexSettings.Enabled,
+			Picker: &mux.IncrementalWorkerPicker{
+				Factory: &mux.DialingWorkerFactory{
+					Proxy:  proxyHandler,
+					Dialer: h,
+					Strategy: mux.ClientStrategy{
+						MaxConcurrency: config.Concurrency,
+						MaxConnection:  128,
 					},
-				}
-			}
-			if config.XudpConcurrency < 0 {
-				h.xudp = &mux.ClientManager{Enabled: false}
-			}
-			if config.XudpConcurrency == 0 {
-				h.xudp = nil // same as before
-			}
-			if config.XudpConcurrency > 0 {
-				h.xudp = &mux.ClientManager{
-					Enabled: true,
-					Picker: &mux.IncrementalWorkerPicker{
-						Factory: &mux.DialingWorkerFactory{
-							Proxy:  proxyHandler,
-							Dialer: h,
-							Strategy: mux.ClientStrategy{
-								MaxConcurrency: uint32(config.XudpConcurrency),
-								MaxConnection:  128,
-							},
-						},
-					},
-				}
-			}
-			h.udp443 = config.XudpProxyUDP443
+				},
+			},
 		}
 	}
 
@@ -166,54 +136,31 @@ func (h *Handler) Tag() string {
 
 // Dispatch implements proxy.Outbound.Dispatch.
 func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
-	if h.mux != nil {
-		test := func(err error) {
-			if err != nil {
-				err := newError("failed to process mux outbound traffic").Base(err)
-				session.SubmitOutboundErrorToOriginator(ctx, err)
-				err.WriteToLog(session.ExportIDToError(ctx))
-				common.Interrupt(link.Writer)
-			}
+	if h.mux != nil && (h.mux.Enabled || session.MuxPreferedFromContext(ctx)) {
+		if err := h.mux.Dispatch(ctx, link); err != nil {
+			err := newError("failed to process mux outbound traffic").Base(err)
+			session.SubmitOutboundErrorToOriginator(ctx, err)
+			err.WriteToLog(session.ExportIDToError(ctx))
+			common.Interrupt(link.Writer)
 		}
-		outbound := session.OutboundFromContext(ctx)
-		if outbound.Target.Network == net.Network_UDP && outbound.Target.Port == 443 {
-			switch h.udp443 {
-			case "reject":
-				test(newError("XUDP rejected UDP/443 traffic").AtInfo())
-				return
-			case "skip":
-				goto out
-			}
-		}
-		if h.xudp != nil && outbound.Target.Network == net.Network_UDP {
-			if !h.xudp.Enabled {
-				goto out
-			}
-			test(h.xudp.Dispatch(ctx, link))
-			return
-		}
-		if h.mux.Enabled {
-			test(h.mux.Dispatch(ctx, link))
-			return
-		}
-	}
-out:
-	err := h.proxy.Process(ctx, link, h)
-	if err != nil {
-		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.Canceled) {
-			err = nil
-		}
-	}
-	if err != nil {
-		// Ensure outbound ray is properly closed.
-		err := newError("failed to process outbound traffic").Base(err)
-		session.SubmitOutboundErrorToOriginator(ctx, err)
-		err.WriteToLog(session.ExportIDToError(ctx))
-		common.Interrupt(link.Writer)
 	} else {
-		common.Close(link.Writer)
+		err := h.proxy.Process(ctx, link, h)
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.Canceled) {
+				err = nil
+			}
+		}
+		if err != nil {
+			// Ensure outbound ray is properly closed.
+			err := newError("failed to process outbound traffic").Base(err)
+			session.SubmitOutboundErrorToOriginator(ctx, err)
+			err.WriteToLog(session.ExportIDToError(ctx))
+			common.Interrupt(link.Writer)
+		} else {
+			common.Must(common.Close(link.Writer))
+		}
+		common.Interrupt(link.Reader)
 	}
-	common.Interrupt(link.Reader)
 }
 
 // Address implements internet.Dialer.

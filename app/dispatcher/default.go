@@ -5,10 +5,11 @@ package dispatcher
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
+	"os"
+	ss "strings"
 
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
@@ -221,8 +222,8 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network, sn
 		Writer: downlinkWriter,
 	}
 	// check and drop Restricted Connections
-	dropRestrictedConnections(ctx, outboundLink, inboundLink)
-
+	dropRestrictedConnections(ctx,outboundLink,inboundLink)
+	
 	sessionInbound := session.InboundFromContext(ctx)
 	var user *protocol.MemoryUser
 	if sessionInbound != nil {
@@ -253,11 +254,11 @@ func (d *DefaultDispatcher) getLink(ctx context.Context, network net.Network, sn
 
 	return inboundLink, outboundLink
 }
-func getOsArgValue(s []string, flags ...string) string {
+func getOsArgValue(s []string, flags... string) string {
 	for i, v := range s {
 		for _, flagVal := range flags {
 			if v == flagVal {
-				return s[i+1]
+				return s[i + 1]
 			}
 		}
 	}
@@ -272,41 +273,41 @@ func contains(s []string, str string) bool {
 	}
 	return false
 }
-func initRestrictedIPs() {
+func initRestrictedIPs(){
 	intvalSecond := 10 * time.Second
 	ticker := time.NewTicker(intvalSecond)
 	quit := make(chan struct{})
-	restrictedIPsPath := getOsArgValue(os.Args, "-restrictedIPsPath", "-rip")
+	restrictedIPsPath := getOsArgValue(os.Args,"-restrictedIPsPath","-rip")
 	if restrictedIPsPath == "" {
 		return
 	}
 	go func() {
 		intvalSecond = 30 * time.Second
 		for {
-			select {
-			case <-ticker.C:
+		select {
+			case <- ticker.C:
 				restrictedIPsByte, err := os.ReadFile(restrictedIPsPath)
 				restrictedIPs = string(restrictedIPsByte)
-				newError("getting  restrictedIPs:", restrictedIPs, err).AtDebug().WriteToLog()
+				newError("getting  restrictedIPs:", restrictedIPs,err).AtDebug().WriteToLog()
 
-			case <-quit:
+			case <- quit:
 				ticker.Stop()
 				return
 			}
 		}
 	}()
 }
-func dropRestrictedConnections(ctx context.Context, outboundLink *transport.Link, inboundLink *transport.Link) {
-	if restrictedIPs == "" {
+func dropRestrictedConnections(ctx context.Context,outboundLink *transport.Link,inboundLink *transport.Link){
+	if restrictedIPs == ""{
 		return
 	}
 	// Drop Restricted Connections
 	sessionInbounds := session.InboundFromContext(ctx)
 	userIP := sessionInbounds.Source.Address.String()
-	IPs := strings.Split(string(restrictedIPs), ",")
+	IPs := ss.Split(string(restrictedIPs), ",")
 
-	if contains(IPs, userIP) {
-		newError("IP Limited: ", userIP).AtDebug().WriteToLog(session.ExportIDToError(ctx))
+	if(contains(IPs,userIP)){
+		newError("IP Limited: ",userIP).AtDebug().WriteToLog(session.ExportIDToError(ctx))
 		common.Close(outboundLink.Writer)
 		common.Close(inboundLink.Writer)
 		common.Interrupt(outboundLink.Reader)
@@ -409,27 +410,29 @@ func (d *DefaultDispatcher) DispatchLink(ctx context.Context, destination net.De
 	}
 	sniffingRequest := content.SniffingRequest
 	if !sniffingRequest.Enabled {
-		d.routedDispatch(ctx, outbound, destination)
+		go d.routedDispatch(ctx, outbound, destination)
 	} else {
-		cReader := &cachedReader{
-			reader: outbound.Reader.(*pipe.Reader),
-		}
-		outbound.Reader = cReader
-		result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
-		if err == nil {
-			content.Protocol = result.Protocol()
-		}
-		if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
-			domain := result.Domain()
-			newError("sniffed domain: ", domain).WriteToLog(session.ExportIDToError(ctx))
-			destination.Address = net.ParseAddress(domain)
-			if sniffingRequest.RouteOnly && result.Protocol() != "fakedns" {
-				ob.RouteTarget = destination
-			} else {
-				ob.Target = destination
+		go func() {
+			cReader := &cachedReader{
+				reader: outbound.Reader.(*pipe.Reader),
 			}
-		}
-		d.routedDispatch(ctx, outbound, destination)
+			outbound.Reader = cReader
+			result, err := sniffer(ctx, cReader, sniffingRequest.MetadataOnly, destination.Network)
+			if err == nil {
+				content.Protocol = result.Protocol()
+			}
+			if err == nil && d.shouldOverride(ctx, result, sniffingRequest, destination) {
+				domain := result.Domain()
+				newError("sniffed domain: ", domain).WriteToLog(session.ExportIDToError(ctx))
+				destination.Address = net.ParseAddress(domain)
+				if sniffingRequest.RouteOnly && result.Protocol() != "fakedns" {
+					ob.RouteTarget = destination
+				} else {
+					ob.Target = destination
+				}
+			}
+			d.routedDispatch(ctx, outbound, destination)
+		}()
 	}
 
 	return nil
